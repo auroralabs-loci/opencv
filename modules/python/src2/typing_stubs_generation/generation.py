@@ -730,8 +730,14 @@ def _generate_typing_module(root: NamespaceNode, output_path: Path) -> None:
             will be written.
     """
 
+    def has_module(module_name: str) -> bool:
+        # features has no namespace of its own, detect it by its base class
+        if module_name == "features":
+            return "Feature2D" in root.classes
+        return module_name in root.namespaces
+
     def has_all_required_modules(type_node: TypeNode) -> bool:
-        return all(em in root.namespaces for em in type_node.required_modules)
+        return all(has_module(em) for em in type_node.required_modules)
 
     def register_alias_links_from_aggregated_type(type_node: TypeNode) -> None:
         assert isinstance(type_node, AggregatedTypeNode), \
