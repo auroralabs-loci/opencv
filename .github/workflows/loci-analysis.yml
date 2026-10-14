@@ -1,0 +1,102 @@
+name: LOCI Analysis
+on:
+  push:
+    branches:
+      - loci/main-*
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+jobs:
+  loci:
+    if: vars.UPSTREAM_REPO != ''
+    runs-on: ubuntu-latest
+
+    env:
+      LOCI_PROJECT: 'OpenCV'
+      LOCI_API_KEY: '${{ secrets.LOCI_API_KEY }}'
+      LOCI_BACKEND_URL: '${{ vars.LOCI_BACKEND_URL }}'
+      GH_TOKEN: ${{ secrets.MIRROR_REPOS_WRITE_PAT }}
+
+    environment: ${{ vars.LOCI_ENV || 'PROD__AL_DEMO' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.sha) || github.sha }}
+
+      - name: Compute target
+        id: target
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'loci/main-'))
+        run: |
+          branch="${{ github.ref_name }}"
+          sha="${branch#loci/main-}"
+          echo "value=main@${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute base
+        id: base
+        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !startsWith(github.ref_name, 'loci/main-'))
+        run: |
+          git remote add upstream "https://github.com/${{ vars.UPSTREAM_REPO }}.git" 2>/dev/null || true
+          git fetch upstream
+          upstream_default=$(gh api "repos/${{ vars.UPSTREAM_REPO }}" --jq .default_branch)
+          merge_base=$(git merge-base HEAD "upstream/${upstream_default}")
+          short_sha="${merge_base:0:7}"
+          echo "value=main@${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            build-essential \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu
+        shell: bash -euo pipefail {0}
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=platforms/linux/aarch64-gnu.toolchain.cmake \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-Bsymbolic" \
+            -DCPU_BASELINE=NEON \
+            -DENABLE_OMIT_FRAME_POINTER=OFF \
+            -DWITH_KLEIDICV=OFF \
+            -DWITH_CAROTENE=OFF \
+            -DWITH_GTK=OFF \
+            -DWITH_QT=OFF \
+            -DWITH_FFMPEG=OFF \
+            -DWITH_GSTREAMER=OFF \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_PERF_TESTS=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_opencv_apps=OFF \
+            -DBUILD_JAVA=OFF \
+            -DBUILD_opencv_python3=OFF \
+            -DBUILD_opencv_world=OFF \
+            -DBUILD_ZLIB=ON \
+            -DBUILD_JPEG=ON \
+            -DBUILD_PNG=ON \
+            -DBUILD_TIFF=ON \
+            -DBUILD_WEBP=ON \
+            -DBUILD_OPENJPEG=ON
+        shell: bash -euo pipefail {0}
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+        shell: bash -euo pipefail {0}
+
+      - name: LOCI Upload
+        uses: auroralabs-loci/loci-action@v1
+        with:
+          mode: upload
+          binaries: |
+                build/lib/libopencv_*.so*
+          project: '${{ env.LOCI_PROJECT }}'
+          target: ${{ steps.target.outputs.value || ''}}
+          base: ${{ steps.base.outputs.value || '' }}
